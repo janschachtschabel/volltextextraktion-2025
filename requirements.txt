@@ -1,0 +1,13 @@
+setuptools
+pandas
+numpy
+fastapi
+uvicorn
+pydantic
+trafilatura
+py3langid
+playwright
+pyrate-limiter>=3
+markitdown[all]
+beautifulsoup4
+requests
