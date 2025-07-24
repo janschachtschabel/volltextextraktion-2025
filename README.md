@@ -1,6 +1,6 @@
-# Text Extraction Smart - Enhanced API Documentation
+# Text Extraction API 2025
 
-A comprehensive, production-ready text extraction API that provides robust content extraction from URLs with advanced features for handling modern web challenges.
+A comprehensive, text extraction API that provides robust content extraction from URLs with advanced features for handling modern web challenges.
 
 ## 🚀 Key Features
 
