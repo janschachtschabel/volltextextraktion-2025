@@ -14,6 +14,7 @@ import logging
 import random
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import py3langid as langid
@@ -25,11 +26,15 @@ logger = logging.getLogger(__name__)
 
 # Import MarkItDown converter and other modules
 try:
-    from .markitdown_converter import get_markitdown_converter, is_markitdown_available
-    from .quality import calculate_quality_metrics
+    from .markitdown_converter import (
+        MarkItDownConversionError,
+        get_markitdown_converter,
+        is_markitdown_available,
+    )
     MARKITDOWN_AVAILABLE = True
 except ImportError:
     MARKITDOWN_AVAILABLE = False
+    MarkItDownConversionError = Exception  # type: ignore
     logger.warning("MarkItDown converter not available - file conversion disabled")
 
 # Configure trafilatura for optimal extraction
@@ -248,15 +253,14 @@ def extract_links_from_html(html_content: str, base_url: str) -> List[Dict[str, 
 
 
 def calculate_quality_metrics(text: str) -> Optional[Dict[str, Any]]:
-    """Calculate simplified, user-friendly quality metrics."""
+    """Calculate lightweight quality indicators for extracted text."""
     try:
-        # Import simplified quality module if available
-        try:
-            from text_extraction.quality import calculate_simplified_quality_metrics
-            return calculate_simplified_quality_metrics(text)
-        except ImportError:
-            logger.warning("Quality metrics module not available")
-            return None
+        from text_extraction.quality import calculate_quality_metrics as _calculate
+
+        return _calculate(text)
+    except ImportError:
+        logger.warning("Quality metrics module not available")
+        return None
     except Exception as e:
         logger.error(f"Quality metrics calculation failed: {e}")
         return None
@@ -282,25 +286,34 @@ async def convert_file_content(
             # Detect file format from URL
             from urllib.parse import urlparse
             parsed_url = urlparse(url)
-            file_extension = parsed_url.path.split('.')[-1].lower() if '.' in parsed_url.path else 'unknown'
-            
+            file_name = Path(parsed_url.path).name or None
+            file_extension = (
+                file_name.split('.')[-1].lower()
+                if file_name and '.' in file_name
+                else 'unknown'
+            )
+
             # Get converter instance
             converter = get_markitdown_converter(
                 max_file_size_mb=max_file_size_mb,
                 timeout_seconds=timeout_seconds
             )
-            
+
             # Convert file
             text, metadata = await converter.convert_file_to_markdown(
                 content=content,
-                file_format=file_extension
+                file_format=file_extension,
+                filename=file_name,
             )
-            
+
             return text, metadata
-            
+
         except ImportError as e:
             logger.warning(f"MarkItDown converter module not available: {e}")
             return "", {"converted": False, "reason": "converter_not_available"}
+        except MarkItDownConversionError as conversion_error:
+            logger.warning(f"MarkItDown conversion failed: {conversion_error}")
+            return "", {"converted": False, "reason": str(conversion_error)}
     except Exception as e:
         logger.error(f"File conversion failed: {e}")
         return "", {"converted": False, "reason": f"conversion_error: {str(e)}"}

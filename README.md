@@ -88,17 +88,22 @@ When `convert_files: true`, supports automatic conversion of:
 - **Text formats**: TXT, Markdown, reStructuredText, LaTeX
 - **E-books**: EPUB, MOBI
 
-#### Quality Metrics (when `calculate_quality: true`)
+#### Quality Signals (when `calculate_quality: true`)
+The service now reports lightweight heuristics instead of full readability
+statistics. Each response includes the detected content category (educational
+content, metadata about a learning offering, error page or other), a
+confidence score, and the keyword groups that triggered the classification.
 ```json
 {
   "quality_metrics": {
     "character_length": 1500,
-    "readability_score": 0.75,          // 0-1: Higher = more readable
-    "diversity_score": 0.68,            // 0-1: Higher = more diverse vocabulary
-    "structure_score": 0.82,            // 0-1: Higher = better structure
-    "noise_coherence_score": 0.71,      // 0-1: Higher = less noise, more coherent
-    "error_indicator_score": 0.05,      // 0-1: Higher = likely error/bot page
-    "overall_quality_score": 0.74       // 0-1: Aggregate quality score
+    "content_category": "educational_content",   // Detected content type
+    "confidence": 0.82,                              // Confidence for the detected category
+    "matched_keywords": {
+      "educational_content": 5,
+      "educational_metadata": 1,
+      "error_page": 0
+    }
   }
 }
 ```

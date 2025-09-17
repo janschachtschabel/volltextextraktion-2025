@@ -18,13 +18,13 @@ import io
 import logging
 import re
 import tempfile
+import zipfile
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any, Optional, Tuple
 from urllib.parse import urlparse, parse_qs
 
 # Global variable to track MarkItDown availability
 _markitdown_available = None
-_markitdown_instance = None
 
 def is_markitdown_available() -> bool:
     """Check if MarkItDown is available for import."""
@@ -140,6 +140,70 @@ class MarkItDownConverter:
         except Exception as e:
             self.logger.error(f"Failed to initialize MarkItDown: {e}")
             raise MarkItDownConversionError(f"MarkItDown initialization failed: {e}")
+
+    @staticmethod
+    def _guess_file_format(content: bytes) -> Optional[str]:
+        """Attempt to guess the file format from the binary signature."""
+        if not content:
+            return None
+
+        # PDF header
+        if content.startswith(b"%PDF"):
+            return "pdf"
+
+        # RTF documents start with "{\rtf"
+        if content.startswith(b"{\\rtf"):
+            return "rtf"
+
+        # OpenXML-based formats (docx, xlsx, pptx) are zipped containers
+        if content.startswith(b"PK"):
+            try:
+                with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                    names = archive.namelist()
+                    if any(name.startswith("word/") for name in names):
+                        return "docx"
+                    if any(name.startswith("xl/") for name in names):
+                        return "xlsx"
+                    if any(name.startswith("ppt/") for name in names):
+                        return "pptx"
+            except zipfile.BadZipFile:
+                return None
+
+        # Fallback: try to decode as text – treat as plain text if successful
+        try:
+            content[:1024].decode("utf-8")
+            return "txt"
+        except Exception:
+            return None
+
+        return None
+
+    def _normalise_format(
+        self,
+        file_format: Optional[str],
+        filename: Optional[str],
+        content: bytes,
+    ) -> str:
+        """Determine the most likely file format for conversion."""
+
+        candidate = (file_format or "").lower().lstrip(".")
+
+        if not candidate or candidate == "unknown":
+            if filename:
+                candidate = Path(filename).suffix.lstrip(".").lower()
+
+        if not candidate or candidate == "unknown":
+            guessed = self._guess_file_format(content)
+            if guessed:
+                candidate = guessed
+
+        if not candidate:
+            raise MarkItDownConversionError("Unable to determine file format for conversion")
+
+        if not self.is_convertible_format(candidate):
+            raise MarkItDownConversionError(f"Unsupported format: {candidate}")
+
+        return candidate
     
     def get_supported_formats(self) -> Dict[str, str]:
         """Get dictionary of supported formats."""
@@ -171,8 +235,12 @@ class MarkItDownConverter:
                 f"File size ({file_size_mb:.2f}MB) exceeds limit ({self.max_file_size_mb}MB)"
             )
     
-    async def convert_file_to_markdown(self, content: bytes, file_format: str, 
-                                     filename: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
+    async def convert_file_to_markdown(
+        self,
+        content: bytes,
+        file_format: str,
+        filename: Optional[str] = None,
+    ) -> Tuple[str, Dict[str, Any]]:
         """
         Convert file content to markdown using MarkItDown.
         
@@ -187,65 +255,81 @@ class MarkItDownConverter:
         Raises:
             MarkItDownConversionError: If conversion fails
         """
-        if not self.is_convertible_format(file_format):
-            raise MarkItDownConversionError(f"Unsupported format: {file_format}")
-        
+        normalised_format = self._normalise_format(file_format, filename, content)
+
         # Validate file size
         self._validate_file_size(content)
-        
+
         file_size_mb = len(content) / (1024 * 1024)
-        self.logger.info(f"Converting {file_format.upper()} file ({file_size_mb:.2f}MB) to markdown")
-        
+        self.logger.info(
+            "Converting %s file (%.2fMB) to markdown",
+            normalised_format.upper(),
+            file_size_mb,
+        )
+
         try:
-            # Create temporary file for MarkItDown
-            with tempfile.NamedTemporaryFile(suffix=f'.{file_format}', delete=False) as temp_file:
-                temp_file.write(content)
-                temp_file.flush()
-                temp_path = Path(temp_file.name)
-            
-            try:
-                # Convert using async wrapper
-                result = await self._convert_file_async(temp_path)
-                
-                metadata = {
-                    'converted': True,
-                    'original_format': file_format.upper(),
-                    'file_size_mb': round(file_size_mb, 3),
-                    'conversion_method': 'markitdown'
-                }
-                
-                self.logger.info(f"Successfully converted {file_format.upper()} file ({len(result)} characters)")
-                return result, metadata
-                
-            finally:
-                # Clean up temporary file
-                try:
-                    temp_path.unlink()
-                except Exception as e:
-                    self.logger.warning(f"Failed to clean up temp file: {e}")
-                    
+            # Convert using async wrapper
+            result_text = await self._convert_file_async(content, normalised_format)
+
+            metadata = {
+                "converted": True,
+                "original_format": normalised_format.upper(),
+                "file_size_mb": round(file_size_mb, 3),
+                "conversion_method": "markitdown",
+                "character_length": len(result_text),
+            }
+
+            self.logger.info(
+                "Successfully converted %s file (%d characters)",
+                normalised_format.upper(),
+                len(result_text),
+            )
+            return result_text, metadata
+
         except Exception as e:
             self.logger.error(f"MarkItDown conversion failed: {e}")
             raise MarkItDownConversionError(f"Conversion failed: {e}")
-    
-    async def _convert_file_async(self, file_path: Path) -> str:
+
+    async def _convert_file_async(self, content: bytes, file_format: str) -> str:
         """Async wrapper for MarkItDown conversion."""
-        def _convert():
+        def _convert() -> str:
+            stream = io.BytesIO(content)
+            stream.seek(0)
+
             try:
-                result = self.markitdown.convert(str(file_path))
-                return result.text_content if hasattr(result, 'text_content') else str(result)
-            except Exception as e:
-                raise MarkItDownConversionError(f"MarkItDown conversion error: {e}")
-        
+                result = self.markitdown.convert(stream, file_extension=f".{file_format}")
+            except TypeError:
+                # Some converters expect a path on disk – fall back to a temp file
+                with tempfile.NamedTemporaryFile(suffix=f".{file_format}", delete=False) as temp_file:
+                    temp_file.write(content)
+                    temp_file.flush()
+                    temp_path = Path(temp_file.name)
+
+                try:
+                    result = self.markitdown.convert(str(temp_path))
+                finally:
+                    try:
+                        temp_path.unlink()
+                    except Exception:
+                        pass
+            except Exception as exc:  # pragma: no cover - defensive
+                raise MarkItDownConversionError(f"MarkItDown conversion error: {exc}") from exc
+
+            markdown = getattr(result, "markdown", None) or getattr(result, "text_content", None)
+            if not markdown:
+                raise MarkItDownConversionError("MarkItDown returned no textual content")
+
+            return markdown.strip()
+
         # Run conversion in thread pool with timeout
         try:
             return await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(None, _convert),
-                timeout=self.timeout_seconds
+                asyncio.to_thread(_convert),
+                timeout=self.timeout_seconds,
             )
         except asyncio.TimeoutError:
             raise MarkItDownConversionError(f"Conversion timed out after {self.timeout_seconds}s")
-    
+
     async def convert_youtube_to_markdown(self, youtube_url: str) -> Tuple[str, Dict[str, Any]]:
         """
         Convert YouTube video to markdown with transcription.
@@ -286,19 +370,24 @@ class MarkItDownConverter:
     
     async def _convert_youtube_async(self, youtube_url: str) -> str:
         """Async wrapper for YouTube conversion."""
-        def _convert():
+        def _convert() -> str:
             try:
                 result = self.markitdown.convert(youtube_url)
-                return result.text_content if hasattr(result, 'text_content') else str(result)
-            except Exception as e:
-                raise MarkItDownConversionError(f"YouTube conversion error: {e}")
-        
+            except Exception as exc:  # pragma: no cover - defensive
+                raise MarkItDownConversionError(f"YouTube conversion error: {exc}") from exc
+
+            markdown = getattr(result, "markdown", None) or getattr(result, "text_content", None)
+            if not markdown:
+                raise MarkItDownConversionError("MarkItDown returned no textual content for the video")
+
+            return markdown.strip()
+
         # Run conversion in thread pool with timeout (longer for videos)
         video_timeout = max(self.timeout_seconds * 2, 120)  # At least 2 minutes for videos
         try:
             return await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(None, _convert),
-                timeout=video_timeout
+                asyncio.to_thread(_convert),
+                timeout=video_timeout,
             )
         except asyncio.TimeoutError:
             raise MarkItDownConversionError(f"YouTube conversion timed out after {video_timeout}s")

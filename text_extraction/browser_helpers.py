@@ -12,7 +12,9 @@ import random
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 from playwright import async_api
 
@@ -28,6 +30,24 @@ if sys.platform.startswith('win'):
 from .spa_extraction import enhanced_spa_extraction
 from .error_detection import fallback_extraction_strategies
 
+try:
+    from .markitdown_converter import (
+        MarkItDownConversionError,
+        get_markitdown_converter,
+        is_markitdown_available,
+    )
+    MARKITDOWN_CONVERTER_READY = True
+except ImportError:
+    MarkItDownConversionError = Exception  # type: ignore
+
+    def get_markitdown_converter(*args, **kwargs):  # type: ignore
+        raise ImportError("MarkItDown converter not available")
+
+    def is_markitdown_available() -> bool:  # type: ignore
+        return False
+
+    MARKITDOWN_CONVERTER_READY = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,6 +60,26 @@ def _detect_language(text: str) -> str:
     except ImportError:
         pass
     return "en"
+
+
+def _format_from_content_type(content_type: str) -> Optional[str]:
+    """Map HTTP content types to file extensions understood by MarkItDown."""
+    mapping = {
+        "application/pdf": "pdf",
+        "application/x-pdf": "pdf",
+        "application/acrobat": "pdf",
+        "application/msword": "doc",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+        "application/vnd.ms-excel": "xls",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+        "application/vnd.ms-powerpoint": "ppt",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+        "text/plain": "txt",
+        "text/csv": "csv",
+        "text/html": "html",
+    }
+
+    return mapping.get(content_type)
 
 
 async def _wait_for_content_indicators(page: async_api.Page, timeout: int = 10000) -> None:
@@ -199,6 +239,21 @@ async def extract_with_browser(
     logger.error(f"DEBUG: extract_with_browser called with output_format='{output_format}'")
     logger.info(f"Starting robust browser extraction for URL: {url}")
     
+    # Prepare MarkItDown converter for file downloads when requested
+    converter = None
+    if convert_files:
+        if MARKITDOWN_CONVERTER_READY and is_markitdown_available():
+            try:
+                converter = get_markitdown_converter(
+                    max_file_size_mb=max_file_size_mb,
+                    timeout_seconds=conversion_timeout,
+                )
+            except Exception as converter_error:  # pragma: no cover - defensive
+                logger.warning(f"Could not initialize MarkItDown converter: {converter_error}")
+                converter = None
+        else:
+            logger.info("MarkItDown converter not available in browser mode")
+
     # Create fresh browser instance if none provided
     fresh_browser = None
     fresh_playwright = None
@@ -206,47 +261,70 @@ async def extract_with_browser(
         try:
             from playwright.async_api import async_playwright
             fresh_playwright = await async_playwright().start()
-            
+
             # Enhanced browser launch configuration for stability
-            fresh_browser = await fresh_playwright.chromium.launch(
-                headless=True,
-                args=[
-                    '--no-sandbox',
-                    '--disable-dev-shm-usage',
+            primary_args = [
+                '--no-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--disable-web-security',
+                '--disable-features=VizDisplayCompositor',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding',
+                '--disable-extensions',
+                '--disable-plugins',
+                '--disable-default-apps',
+                '--disable-sync',
+                '--disable-translate',
+                '--hide-scrollbars',
+                '--mute-audio',
+                '--no-first-run',
+                '--no-default-browser-check',
+                '--disable-logging',
+                '--disable-permissions-api',
+                '--disable-presentation-api',
+                '--disable-speech-api',
+                '--disable-file-system',
+                '--disable-sensors',
+                '--disable-geolocation',
+                '--disable-notifications',
+                '--disable-features=TranslateUI',
+                '--disable-hang-monitor',
+                '--disable-prompt-on-repost',
+                '--disable-domain-reliability',
+            ]
+
+            if sys.platform.startswith('win'):
+                primary_args = [
                     '--disable-gpu',
-                    '--disable-web-security',
-                    '--disable-features=VizDisplayCompositor',
-                    '--disable-background-timer-throttling',
-                    '--disable-backgrounding-occluded-windows',
-                    '--disable-renderer-backgrounding',
                     '--disable-extensions',
-                    '--disable-plugins',
-                    '--disable-images',
-                    '--disable-default-apps',
-                    '--disable-sync',
-                    '--disable-translate',
-                    '--hide-scrollbars',
+                    '--disable-background-timer-throttling',
                     '--mute-audio',
-                    '--no-first-run',
-                    '--no-default-browser-check',
-                    '--disable-logging',
-                    '--disable-permissions-api',
-                    '--disable-presentation-api',
-                    '--disable-speech-api',
-                    '--disable-file-system',
-                    '--disable-sensors',
-                    '--disable-geolocation',
                     '--disable-notifications',
-                    # Additional stability flags as requested
-                    '--disable-features=TranslateUI',
-                    '--disable-hang-monitor',
-                    '--disable-prompt-on-repost',
-                    '--disable-domain-reliability'
-                ],
-                # Additional stability options
-                slow_mo=50,  # Small delay between operations
-                timeout=60000  # 60 second timeout
-            )
+                ]
+
+            launch_options: Dict[str, Any] = {
+                'headless': True,
+                'args': primary_args,
+                'timeout': 60000,
+            }
+
+            if not sys.platform.startswith('win'):
+                launch_options['slow_mo'] = 50
+
+            try:
+                fresh_browser = await fresh_playwright.chromium.launch(**launch_options)
+            except Exception as launch_error:
+                logger.warning(f"Primary Chromium launch configuration failed: {launch_error}")
+                fallback_args = ['--disable-gpu']
+                if not sys.platform.startswith('win'):
+                    fallback_args.insert(0, '--no-sandbox')
+
+                launch_options.pop('slow_mo', None)
+                launch_options['args'] = fallback_args
+
+                fresh_browser = await fresh_playwright.chromium.launch(**launch_options)
             browser = fresh_browser
             logger.debug("Created fresh browser instance with enhanced stability configuration")
         except Exception as e:
@@ -363,25 +441,39 @@ async def extract_with_browser(
                             content_type = content_type.split(';')[0].strip()
                     
                     # Handle file conversion if enabled
-                    if convert_files and content_type:
-                        if any(fmt in content_type for fmt in ['pdf', 'docx', 'xlsx', 'pptx']):
-                            logger.info(f"Attempting file conversion for {content_type} in browser mode: {final_url}")
+                    if convert_files and converter:
+                        try:
+                            filename: Optional[str] = None
+                            file_format = _format_from_content_type(content_type or "") if content_type else None
+
                             try:
-                                # Get file content from response
-                                file_content = await response.body()
-                                
-                                # Convert file using file converter
-                                from .file_converter import convert_file_to_markdown
-                                converted_text, conversion_metadata = convert_file_to_markdown(
-                                    content=file_content,
-                                    url=final_url,
-                                    output_format=output_format,
-                                    max_file_size_mb=max_file_size_mb,
-                                    timeout_seconds=conversion_timeout
+                                parsed_final = urlparse(final_url)
+                                filename = Path(parsed_final.path).name or None
+                                if not file_format and filename and '.' in filename:
+                                    file_format = filename.split('.')[-1].lower()
+                            except Exception:
+                                filename = None
+
+                            if not file_format:
+                                file_format = 'unknown'
+
+                            if file_format and (
+                                file_format == 'unknown'
+                                or converter.is_convertible_format(file_format)
+                            ):
+                                logger.info(
+                                    "Attempting file conversion for %s in browser mode: %s",
+                                    file_format,
+                                    final_url,
                                 )
-                                
+                                file_content = await response.body()
+                                converted_text, conversion_metadata = await converter.convert_file_to_markdown(
+                                    content=file_content,
+                                    file_format=file_format,
+                                    filename=filename,
+                                )
+
                                 if converted_text:
-                                    # Successful conversion
                                     result = {
                                         "text": converted_text,
                                         "status": status_code,
@@ -390,23 +482,31 @@ async def extract_with_browser(
                                         "mode": "browser",
                                         "final_url": final_url,
                                         "proxy_used": proxy_used,
-                                        "converted": True,
+                                        "converted": conversion_metadata.get("converted", True),
                                         "original_format": conversion_metadata.get("original_format"),
                                         "file_size_mb": conversion_metadata.get("file_size_mb"),
                                         "links": [] if include_links else None,
-                                        "quality_metrics": None
+                                        "quality_metrics": None,
                                     }
-                                    
+
                                     if context:
                                         await context.close()
-                                    
-                                    logger.info(f"Successfully converted file in browser mode ({len(converted_text)} chars)")
+
+                                    logger.info(
+                                        "Successfully converted file in browser mode (%d chars)",
+                                        len(converted_text),
+                                    )
                                     return result
-                                    
-                            except Exception as e:
-                                logger.error(f"File conversion failed in browser mode for {final_url}: {str(e)}")
-                                # Continue with normal extraction
-                    
+                        except MarkItDownConversionError as conversion_error:
+                            logger.warning(
+                                f"File conversion failed in browser mode for {final_url}: {conversion_error}"
+                            )
+                        except Exception as conversion_error:  # pragma: no cover - defensive
+                            logger.error(
+                                f"Unexpected error during file conversion for {final_url}: {conversion_error}"
+                            )
+                        # Continue with normal extraction when conversion fails
+
                     navigation_successful = True
                     logger.debug(f"Navigation successful: {status_code} - {final_url}")
                 
@@ -579,8 +679,9 @@ async def extract_with_browser(
         quality_metrics = None
         if calculate_quality and extracted_text:
             try:
-                from .quality import calculate_simplified_quality_metrics
-                quality_metrics = calculate_simplified_quality_metrics(extracted_text)
+                from .quality import calculate_quality_metrics as _calculate_quality
+
+                quality_metrics = _calculate_quality(extracted_text)
             except Exception as e:
                 logger.warning(f"Quality calculation failed: {e}")
         
