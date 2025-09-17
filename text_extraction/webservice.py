@@ -155,14 +155,27 @@ class LinkInfo(BaseModel):
 
 
 class QualityMetrics(BaseModel):
-    """Simplified, user-friendly content quality assessment metrics"""
-    character_length: int = Field(default=0, description="Number of characters in text")
-    readability_score: float = Field(default=0.0, ge=0.0, le=1.0, description="Readability score (0-1, higher = more readable)")
-    diversity_score: float = Field(default=0.0, ge=0.0, le=1.0, description="Vocabulary diversity score (0-1, higher = more diverse)")
-    structure_score: float = Field(default=0.0, ge=0.0, le=1.0, description="Text structure score (0-1, higher = better structure)")
-    noise_coherence_score: float = Field(default=0.0, ge=0.0, le=1.0, description="Noise/coherence score (0-1, higher = less noise, more coherent)")
-    error_indicator_score: float = Field(default=0.0, ge=0.0, le=1.0, description="Error page indicator (0-1, higher = likely error/bot page)")
-    overall_quality_score: float = Field(default=0.0, ge=0.0, le=1.0, description="Overall quality score (0-1, higher = better quality)")
+    """Lightweight signals describing the extracted content."""
+
+    character_length: int = Field(
+        default=0,
+        ge=0,
+        description="Number of characters in the extracted text",
+    )
+    content_category: str = Field(
+        default="other",
+        description="Detected content category (educational_content, educational_metadata, error_page, other)",
+    )
+    confidence: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Confidence for the detected content category",
+    )
+    matched_keywords: Dict[str, int] = Field(
+        default_factory=dict,
+        description="Counts of matched keyword groups used for classification",
+    )
 
 
 class ExtractionData(BaseModel):

@@ -419,65 +419,41 @@ MarkItDown für YouTube-Transkription hatte Rate-Limiting-Probleme (HTTP 429). A
 ### **2025-07-22: Quality Metrics Simplification - VOLLSTÄNDIG IMPLEMENTIERT ✅**
 
 **Problem Identifiziert:**
-- Qualitätsmetriken waren zu komplex und überwältigend für Benutzer
-- Verschachtelte Struktur mit 50+ Einzelwerten schwer zu interpretieren
-- Benutzer benötigten einfache, aggregierte Scores für schnelle Bewertung
+- Ausführliche Qualitätsmetriken lieferten zu viele Kennzahlen für den praktischen Einsatz
+- Nutzer benötigen schnelle Einschätzungen: Länge, Klassifikation und Fehlersignale
 
-**Vollständige Vereinfachung Implementiert:**
+**Vereinfachte Qualitätsheuristiken:**
 
-**1. Neue vereinfachte Qualitätsmetrik-Funktion:**
-- **Datei:** `text_extraction/quality.py` (Zeilen 478-620)
-- **Funktion:** `calculate_simplified_quality_metrics()`
-- **Benutzerfreundliche Scores (alle 0-1 normalisiert):**
+**1. Neue Klassifikationslogik:**
+- **Datei:** `text_extraction/quality.py`
+- **Funktion:** `calculate_quality_metrics()` (alias `calculate_simplified_quality_metrics`)
+- **Ausgabe-Beispiel:**
   ```python
   {
       "character_length": 173,
-      "readability_score": 0.633,      # Höher = lesbarer
-      "diversity_score": 0.805,        # Höher = vielfältiger Wortschatz
-      "structure_score": 0.775,        # Höher = bessere Struktur
-      "noise_coherence_score": 0.568,  # Höher = weniger Rauschen, kohärenter
-      "error_indicator_score": 0.0,    # Höher = wahrscheinlich Fehlerseite
-      "overall_quality_score": 0.627   # Höher = bessere Gesamtqualität
+      "content_category": "educational_metadata",
+      "confidence": 0.81,
+      "matched_keywords": {
+          "educational_content": 2,
+          "educational_metadata": 4,
+          "error_page": 0
+      }
   }
   ```
 
-**2. Pydantic-Modell komplett vereinfacht:**
-- **Datei:** `text_extraction/webservice.py` (Zeilen 128-135)
-- **Entfernt:** 6 komplexe verschachtelte Modellklassen (ReadabilityMetrics, DiversityMetrics, etc.)
-- **Ersetzt durch:** Einfaches QualityMetrics-Modell mit nur 7 Feldern
-- **Validierung:** Alle Scores automatisch auf 0.0-1.0 begrenzt
+**2. API-Modell angepasst:**
+- **Datei:** `text_extraction/webservice.py`
+- **Pydantic-Modell `QualityMetrics`** reduziert auf vier Felder (Länge, Kategorie, Konfidenz, Keyword-Treffer)
 
-**3. Intelligente Score-Berechnung:**
-- **Readability:** Basiert auf Flesch Reading Ease (Deutsch)
-- **Diversity:** Kombiniert Type-Token Ratio und Shannon Entropy
-- **Structure:** Berücksichtigt Absätze, Überschriften, Satzlängen-Varianz
-- **Noise/Coherence:** Kombiniert Rausch-Indikatoren mit Kohärenz-Bewertung
-- **Error Detection:** Erkennt 404-Seiten, Cloudflare-Blocks, Bot-Challenges
-- **Overall Quality:** Gewichtete Kombination aller Scores
-
-**4. API-Integration aktualisiert:**
+**3. Integrationen aktualisiert:**
 - **Dateien:** `content_extraction.py`, `browser_helpers.py`
-- **Geändert:** Import von `calculate_quality_metrics` → `calculate_simplified_quality_metrics`
+- Nutzen die neue Heuristik direkt; keine umfangreichen Berechnungen mehr notwendig
 - **Rückwärtskompatibilität:** API-Parameter bleiben unverändert
 
-**5. Umfassende Tests durchgeführt:**
-- **Test-Suite erstellt:** `test_simplified_quality_metrics.py`
-- **Test-Ergebnisse:** ✅ 100% Erfolgreich
-  - Response Status: 200 OK
-  - Response Time: 0.82s
-  - Alle 7 Felder korrekt vorhanden
-  - Alle Scores im gültigen Bereich (0-1)
-  - Struktur-Validierung: Perfekt
-
-**Benutzerfreundlichkeit erreicht:**
-- ✅ Von 50+ Einzelwerten auf 7 relevante Scores reduziert
-- ✅ Alle Werte 0-1 normalisiert (einfach zu verstehen)
-- ✅ Klare Bedeutung: Höher = besser (außer error_indicator_score)
-- ✅ Schnelle Qualitätsbewertung auf einen Blick möglich
-- ✅ Fehlerseiten-Erkennung integriert
-- ✅ Gesamtqualität als einzelner Score verfügbar
-
-**Beispiel-Output (example.com):**
+**4. Benutzerfreundlichkeit erreicht:**
+- ✅ Von umfangreichen Kennzahlen auf wenige, aussagekräftige Signale reduziert
+- ✅ Einfache Interpretation: Kategorie + Konfidenz + Keyword-Treffer
+- ✅ Fehlerseiten-Erkennung weiterhin integriert
 - Character Length: 173, Readability: 0.633, Diversity: 0.805
 - Structure: 0.775, Noise/Coherence: 0.568, Error: 0.0
 - Overall Quality: 0.627 (Gute Gesamtqualität)
